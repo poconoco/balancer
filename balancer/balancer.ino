@@ -1,3 +1,23 @@
+
+// 2022 by Leonid Yurchenko <noct at ukr.net>
+// https://github.com/poconoco/balancer/
+//
+// Balancing bot firmware
+//
+// Hardware modules:
+//   - Raspberry Pi Pico
+//   - MPU6050 6axis motion sensor
+//   - L298N DC motors controller
+//
+// Software libraries:
+//   - MPU6050 by Jeff Rowberg <jeff@rowberg.net>
+//   - I2Cdev lib by Jeff Rowberg <jeff@rowberg.net>
+//   - RP2040_PWM by Khoi Hoang
+//
+// Features:
+//   - Use MPU6050 lib to get hardware DMP readings from MPU6050
+//   - Use RP2040_PWM lib to leverage PiPico hardware PWM generators
+
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "RP2040_PWM.h"
@@ -6,36 +26,32 @@
 
 MPU6050 mpu;
 
-#define INTERRUPT_PIN 2  // use pin 2 on Arduino Uno & most boards
-#define LED_PIN 25 // (Arduino is 13, Teensy is 11, Teensy++ is 6)
+// Mechanical config
+#define MPU_ORIENTATION 1, 0, 1, 0  // MPU6050  sensor orientation quaternion: turn 1 around Y axis
+#define BALANCE_PITCH -1.6;    // Target angle where bot is as close as possible to balance
 
-bool blinkState = false;
+// Electrical config
+#define INTERRUPT_PIN 2
+#define LED_PIN 25
+#define L298N_PWM_FREQUENCY 20000
 
 // MPU control/status vars
-bool dmpReady = false;  // set true if DMP init was successful
-uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
-uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
 uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 
 // orientation/motion vars
 Quaternion q;           // [w, x, y, z]         quaternion container
-Quaternion orientation(1, 0, 1, 0);
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+Quaternion orientation(MPU_ORIENTATION);
 
 volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
-void dmpDataReady() {
-    mpuInterrupt = true;
-}
 
-//Define Variables we'll be connecting to
-double pitchSetpointBase = -1.6;
-double pitchSetpoint = pitchSetpointBase;
+//PID ins and outs
+double pitchSetpoint = BALANCE_PITCH;
 double pitchInput = 0;
 double speedOutput;
-
 double feedbackOutput = 0;
 double feedbackSetpoint = 0;
 
@@ -44,10 +60,14 @@ PID speedPid(&pitchInput, &speedOutput, &pitchSetpoint, 12, 25, 0.03, DIRECT);
 PID feedbackPid(&speedOutput, &feedbackOutput, &feedbackSetpoint, 0, 1, 0.0, DIRECT);
 
 // Servo library won't work on PiPico, and we want to leverage hardware PWM generator
-RP2040_PWM sr1(15, 20000, 0);
-RP2040_PWM sr2(14, 20000, 0);
-RP2040_PWM sl1(12, 20000, 0);
-RP2040_PWM sl2(13, 20000, 0);
+RP2040_PWM sr1(15, L298N_PWM_FREQUENCY, 0);
+RP2040_PWM sr2(14, L298N_PWM_FREQUENCY, 0);
+RP2040_PWM sl1(12, L298N_PWM_FREQUENCY, 0);
+RP2040_PWM sl2(13, L298N_PWM_FREQUENCY, 0);
+
+void dmpDataReady() {
+    mpuInterrupt = true;
+}
 
 void i2cSetup() {
     Wire.begin();
@@ -56,16 +76,13 @@ void i2cSetup() {
 
 void MPU6050Connect() {
   static int MPUInitCntr = 0;
-  // initialize device
-  mpu.initialize(); // same
-  // load and configure the DMP
-  devStatus = mpu.dmpInitialize();// same
+
+  mpu.initialize();
+  const uint8_t devStatus = mpu.dmpInitialize();
 
   if (devStatus != 0) {
-    // ERROR!
     // 1 = initial memory load failed
     // 2 = DMP configuration updates failed
-    // (if it's going to break, usually the code will be 1)
 
     char * StatStr[5] { "No Error", "initial memory load failed", "DMP configuration updates failed", "3", "4"};
 
@@ -91,13 +108,13 @@ void MPU6050Connect() {
 
   Serial.println(F("Enabling DMP..."));
   mpu.setDMPEnabled(true);
-  // enable Arduino interrupt detection
 
+  // enable Arduino interrupt detection
   Serial.println(F("Attaching interrupt..."));
   attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, FALLING);
   Serial.println(F("Attached"));  
 
-  mpuIntStatus = mpu.getIntStatus(); // Same
+  mpu.getIntStatus();  // Do we need this?
   // get expected DMP packet size for later comparison
   packetSize = mpu.dmpGetFIFOPacketSize();
   delay(1000); // Let it Stabalize
@@ -131,7 +148,7 @@ void getDMP() { // Best version I have made so far
     Serial.print(F("\tfifoCount ")); Serial.print(fifoCount);
     Serial.print(F("\tpacketSize ")); Serial.print(packetSize);
 
-    mpuIntStatus = mpu.getIntStatus(); // reads MPU6050_RA_INT_STATUS       0x3A
+    const uint8_t mpuIntStatus = mpu.getIntStatus(); // reads MPU6050_RA_INT_STATUS       0x3A
     Serial.print(F("\tMPU Int Status ")); Serial.print(mpuIntStatus , BIN);
     // MPU6050_RA_INT_STATUS       0x3A
     //
@@ -257,7 +274,7 @@ void loop() {
         // return; 
     }
 
-    pitchSetpoint = pitchSetpointBase - feedbackOutput;
+    pitchSetpoint = BALANCE_PITCH - feedbackOutput;
     
     pitchInput = ypr[1] * 180/M_PI;
     speedPid.Compute();
