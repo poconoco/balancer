@@ -55,6 +55,8 @@ double speedOutput;
 double feedbackOutput = 0;
 double feedbackSetpoint = 0;
 
+double feedbackMaxAngle = 1.5;
+
 //Specify the links and initial tuning parameters
 PID speedPid(&pitchInput, &speedOutput, &pitchSetpoint, 12, 25, 0.03, DIRECT);
 PID feedbackPid(&speedOutput, &feedbackOutput, &feedbackSetpoint, 0, 1, 0.0, DIRECT);
@@ -208,7 +210,7 @@ double mapSpeedToPwm(double speed) {
 void setSpeed(double rawSpeed)
 {
     double speed;
-    const double deadBand = 30;
+    const double deadBand = 35;
 
     if (abs(rawSpeed) > 0.001) {
         speed = deadBand + mapDouble(abs(rawSpeed), 0, 100, 0, 100 - deadBand);
@@ -260,9 +262,9 @@ void setup() {
     // configure LED for output
     pinMode(LED_PIN, OUTPUT);
     speedPid.SetOutputLimits(-100, 100);
-    feedbackPid.SetOutputLimits(-1, 1);
-    speedPid.SetSampleTime(2);
-    feedbackPid.SetSampleTime(2);
+    feedbackPid.SetOutputLimits(-feedbackMaxAngle, feedbackMaxAngle);
+    speedPid.SetSampleTime(1);
+    feedbackPid.SetSampleTime(1);
     speedPid.SetMode(AUTOMATIC);
     feedbackPid.SetMode(AUTOMATIC);
 }
@@ -274,9 +276,9 @@ void loop() {
         // return; 
     }
 
-    pitchSetpoint = BALANCE_PITCH - feedbackOutput;
+    pitchSetpoint = BALANCE_PITCH;
     
-    pitchInput = ypr[1] * 180/M_PI;
+    pitchInput = ypr[1] * 180/M_PI + feedbackOutput;
     speedPid.Compute();
     feedbackPid.Compute();
 
@@ -289,7 +291,7 @@ void loop() {
         setSpeed(0);  // Stop
     } else {
         setSpeed(speedOutput);
-//        Serial.print(pitchInput);
+        //Serial.println(feedbackOutput);
 //        Serial.print('\n');
     }
 }
