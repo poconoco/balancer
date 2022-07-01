@@ -9,10 +9,11 @@
 //   - MPU6050 6axis motion sensor
 //   - L298N DC motors controller
 //
-// Software libraries:
+// Software modules:
 //   - MPU6050 by Jeff Rowberg <jeff@rowberg.net>
 //   - I2Cdev lib by Jeff Rowberg <jeff@rowberg.net>
 //   - RP2040_PWM by Khoi Hoang
+//   - PID based on PID by Bradley J. Snyder <snyder.bradleyj@gmail.com>
 //
 // Features:
 //   - Use MPU6050 lib to get hardware DMP readings from MPU6050
@@ -21,14 +22,14 @@
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "RP2040_PWM.h"
+#include "pid.h"
 #include <Wire.h>
-#include <PID_v1.h>
 
 MPU6050 mpu;
 
 // Mechanical config
 #define MPU_ORIENTATION 1, 0, 1, 0  // MPU6050  sensor orientation quaternion: turn 1 around Y axis
-#define BALANCE_PITCH -1.6;    // Target angle where bot is as close as possible to balance
+#define BALANCE_PITCH -2.5;    // Target angle where bot is as close as possible to balance
 
 // Electrical config
 #define INTERRUPT_PIN 2
@@ -55,11 +56,14 @@ double speedOutput;
 double feedbackOutput = 0;
 double feedbackSetpoint = 0;
 
-double feedbackMaxAngle = 1.5;
+double feedbackMaxAngle = 2;
 
 //Specify the links and initial tuning parameters
-PID speedPid(&pitchInput, &speedOutput, &pitchSetpoint, 12, 25, 0.03, DIRECT);
-PID feedbackPid(&speedOutput, &feedbackOutput, &feedbackSetpoint, 0, 1, 0.0, DIRECT);
+
+// PID Args: 
+// double dt, double max, double min, double Kp, double Ki, double Kd
+PID speedPid(1, 100, -100, 15, 0.02, 15, true);
+PID feedbackPid(1, feedbackMaxAngle, -feedbackMaxAngle, 0, 0.00005, 0.0, true);
 
 // Servo library won't work on PiPico, and we want to leverage hardware PWM generator
 RP2040_PWM sr1(15, L298N_PWM_FREQUENCY, 0);
@@ -261,12 +265,6 @@ void setup() {
 
     // configure LED for output
     pinMode(LED_PIN, OUTPUT);
-    speedPid.SetOutputLimits(-100, 100);
-    feedbackPid.SetOutputLimits(-feedbackMaxAngle, feedbackMaxAngle);
-    speedPid.SetSampleTime(1);
-    feedbackPid.SetSampleTime(1);
-    speedPid.SetMode(AUTOMATIC);
-    feedbackPid.SetMode(AUTOMATIC);
 }
 
 void loop() {
@@ -279,19 +277,20 @@ void loop() {
     pitchSetpoint = BALANCE_PITCH;
     
     pitchInput = ypr[1] * 180/M_PI + feedbackOutput;
-    speedPid.Compute();
-    feedbackPid.Compute();
+    speedOutput = speedPid.calculate(pitchSetpoint, pitchInput);
+    feedbackOutput = feedbackPid.calculate(feedbackSetpoint, speedOutput);
 
     if (abs(pitchInput - pitchSetpoint) > 45) {
+        /*
         Serial.print("pitch: \t");
         Serial.print(pitchInput);
         Serial.print(" stopping");
         Serial.print("\n");
-
+        */
         setSpeed(0);  // Stop
     } else {
         setSpeed(speedOutput);
-        //Serial.println(feedbackOutput);
-//        Serial.print('\n');
+        //Serial.println(pitchInput);
+        //Serial.print('\n');
     }
 }
