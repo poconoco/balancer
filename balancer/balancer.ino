@@ -33,7 +33,6 @@ MPU6050 mpu;
 
 // Electrical config
 #define INTERRUPT_PIN 2
-#define LED_PIN 25
 #define L298N_PWM_FREQUENCY 20000
 
 // MPU control/status vars
@@ -62,14 +61,16 @@ double feedbackMaxAngle = 2;
 
 // PID Args: 
 // double dt, double max, double min, double Kp, double Ki, double Kd
-PID speedPid(1, 100, -100, 15, 0.02, 15, true);
-PID feedbackPid(1, feedbackMaxAngle, -feedbackMaxAngle, 0, 0.00005, 0.0, true);
+PID speedPid(1, 100, -100, 9, 0.016, 11000, true);
+PID feedbackPid(1, feedbackMaxAngle, -feedbackMaxAngle, 0, 0.00006, 0.0, true);
 
 // Servo library won't work on PiPico, and we want to leverage hardware PWM generator
 RP2040_PWM sr1(15, L298N_PWM_FREQUENCY, 0);
 RP2040_PWM sr2(14, L298N_PWM_FREQUENCY, 0);
 RP2040_PWM sl1(12, L298N_PWM_FREQUENCY, 0);
 RP2040_PWM sl2(13, L298N_PWM_FREQUENCY, 0);
+
+RP2040_PWM led(25, 1000, 0);
 
 void dmpDataReady() {
     mpuInterrupt = true;
@@ -148,7 +149,6 @@ void getDMP() { // Best version I have made so far
 
   // At this point in the code FIFO Packets should be at 1 99% of the time if not we need to look to see where we are skipping samples.
   if ((fifoCount % packetSize) || (fifoCount > (packetSize * MaxPackets)) || (fifoCount < packetSize)) { // we have failed Reset and wait till next time!
-    digitalWrite(LED_PIN, LOW); // lets turn off the blinking light so we can see we are failing.
     Serial.println(F("Reset FIFO"));
     if (fifoCount % packetSize) Serial.print(F("\t Packet corruption")); // fifoCount / packetSize returns a remainder... Not good! This should never happen if all is well.
     Serial.print(F("\tfifoCount ")); Serial.print(fifoCount);
@@ -187,7 +187,6 @@ void getDMP() { // Best version I have made so far
       fifoCount -= packetSize;
     }
     MPUMath(); // <<<<<<<<<<<<<<<<<<<<<<<<<<<< On success MPUMath() <<<<<<<<<<<<<<<<<<<
-    digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // Blink the Light
     if (fifoCount > 0) mpu.resetFIFO(); // clean up any leftovers Should never happen! but lets start fresh if we need to. this should never happen.
   }
 }
@@ -213,6 +212,8 @@ double mapSpeedToPwm(double speed) {
 
 void setSpeed(double rawSpeed)
 {
+    led.setDuty(rawSpeed, true);
+    
     double speed;
     const double deadBand = 35;
 
@@ -262,9 +263,6 @@ void setup() {
     Serial.println(F("i2cSetup complete"));
     MPU6050Connect();
     Serial.println(F("MPU6050Connect complete"));  
-
-    // configure LED for output
-    pinMode(LED_PIN, OUTPUT);
 }
 
 void loop() {
