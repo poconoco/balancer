@@ -51,18 +51,22 @@ volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin h
 //PID ins and outs
 double pitchSetpoint = BALANCE_PITCH;
 double pitchInput = 0;
-double speedOutput;
-double feedbackOutput = 0;
-double feedbackSetpoint = 0;
+double speedInput;
+double pitchFeedback = 0;
+double speedSetpoint = 0;
+double turn;
 
 double feedbackMaxAngle = 2;
+
+char btMoveForward = 0;
+char btMoveTurn = 0;
 
 //Specify the links and initial tuning parameters
 
 // PID Args: 
 // double dt, double max, double min, double Kp, double Ki, double Kd
-PID speedPid(1, 100, -100, 9, 0.016, 11000, true);
-PID feedbackPid(1, feedbackMaxAngle, -feedbackMaxAngle, 0, 0.00006, 0.0, true);
+PID pitchPid(1, 100, -100, 9, 0.016, 11000, true);
+PID speedPid(1, feedbackMaxAngle, -feedbackMaxAngle, 0, 0.00006, 0.0, true);
 
 // Servo library won't work on PiPico, and we want to leverage hardware PWM generator
 RP2040_PWM sr1(15, L298N_PWM_FREQUENCY, 0);
@@ -71,6 +75,59 @@ RP2040_PWM sl1(12, L298N_PWM_FREQUENCY, 0);
 RP2040_PWM sl2(13, L298N_PWM_FREQUENCY, 0);
 
 RP2040_PWM led(25, 1000, 0);
+
+UART BT(0, 1, NC, NC);
+
+void readMovementFromBT() {
+    static unsigned long lastMovementCommand = 0;
+    unsigned long now = millis();
+  
+    // Expect packet as "MM<forward speed as byte><turn speed as byte>", for full stop.
+    if (BT.available() >= 4) {
+        while (BT.available() && BT.read() != 'M');  // Skip to first 'M' header byte
+        if (BT.available() >= 3 && BT.read() == 'M') {  // Verify the second 'M' header byte
+            btMoveForward = BT.read();
+            btMoveTurn = BT.read();
+
+            lastMovementCommand = now;
+        }
+
+        while (BT.available()) BT.read();  // Flush the rest of available data
+    }
+
+    // If no commands for 1/2 second, stop
+    if (now - lastMovementCommand >= 500) {
+        btMoveForward = 0;
+        btMoveTurn = 0;
+    }
+}
+
+void processMovement() {
+    speedSetpoint = map(btMoveForward, -128, 128, -10, 10);
+    turn = map(btMoveTurn, -128, 128, -10, 10);
+}
+
+void processBalance() {
+    pitchSetpoint = BALANCE_PITCH;
+    
+    pitchInput = ypr[1] * 180/M_PI + pitchFeedback;
+    speedInput = pitchPid.calculate(pitchSetpoint, pitchInput);
+    pitchFeedback = speedPid.calculate(speedSetpoint, speedInput);
+
+    if (abs(pitchInput - pitchSetpoint) > 45) {
+        /*
+        Serial.print("pitch: \t");
+        Serial.print(pitchInput);
+        Serial.print(" stopping");
+        Serial.print("\n");
+        */
+        setSpeed(0);  // Stop
+    } else {
+        setSpeed(speedInput);
+        //Serial.println(pitchInput);
+        //Serial.print('\n');
+    }
+}
 
 void dmpDataReady() {
     mpuInterrupt = true;
@@ -150,12 +207,12 @@ void getDMP() { // Best version I have made so far
   // At this point in the code FIFO Packets should be at 1 99% of the time if not we need to look to see where we are skipping samples.
   if ((fifoCount % packetSize) || (fifoCount > (packetSize * MaxPackets)) || (fifoCount < packetSize)) { // we have failed Reset and wait till next time!
     Serial.println(F("Reset FIFO"));
-    if (fifoCount % packetSize) Serial.print(F("\t Packet corruption")); // fifoCount / packetSize returns a remainder... Not good! This should never happen if all is well.
-    Serial.print(F("\tfifoCount ")); Serial.print(fifoCount);
-    Serial.print(F("\tpacketSize ")); Serial.print(packetSize);
+    if (fifoCount % packetSize) Serial.println(F("\tPacket corruption")); // fifoCount / packetSize returns a remainder... Not good! This should never happen if all is well.
+    Serial.print(F("\tfifoCount ")); Serial.println(fifoCount);
+    Serial.print(F("\tpacketSize ")); Serial.println(packetSize);
 
     const uint8_t mpuIntStatus = mpu.getIntStatus(); // reads MPU6050_RA_INT_STATUS       0x3A
-    Serial.print(F("\tMPU Int Status ")); Serial.print(mpuIntStatus , BIN);
+    Serial.print(F("\tMPU Int Status ")); Serial.println(mpuIntStatus , BIN);
     // MPU6050_RA_INT_STATUS       0x3A
     //
     // Bit7, Bit6, Bit5, Bit4          , Bit3       , Bit2, Bit1, Bit0
@@ -167,13 +224,13 @@ void getDMP() { // Best version I have made so far
     Bit1 DATA_RDY_INT This bit automatically sets to 1 when a Data Ready interrupt is generated.
     */
     if (mpuIntStatus & B10000) { //FIFO_OFLOW_INT
-      Serial.print(F("\tFIFO buffer overflow interrupt "));
+      Serial.println(F("\tFIFO buffer overflow interrupt "));
     }
     if (mpuIntStatus & B1000) { //I2C_MST_INT
-      Serial.print(F("\tSlave I2c Device Status Int "));
+      Serial.println(F("\tSlave I2c Device Status Int "));
     }
     if (mpuIntStatus & B1) { //DATA_RDY_INT
-      Serial.print(F("\tData Ready interrupt "));
+      Serial.println(F("\tData Ready interrupt "));
     }
     Serial.println();
     //I2C_MST_STATUS
@@ -224,18 +281,18 @@ void setSpeed(double rawSpeed)
     } else {
         speed = rawSpeed;
     }
+
+    int allowedTurn = abs(speed)+abs(turn) >= 100 ? 0 : turn;
   
     if (speed > 0) {
         sr1.setDuty(0, true);
-        sr2.setDuty(speed, true);
-        
+        sr2.setDuty(speed+allowedTurn, true);
         sl1.setDuty(0, true);
-        sl2.setDuty(speed, true);
+        sl2.setDuty(speed-allowedTurn, true);
     } else if (speed < 0) {
-        sr1.setDuty(-speed, true);
+        sr1.setDuty(-speed-allowedTurn, true);
         sr2.setDuty(0, true);
-        
-        sl1.setDuty(-speed, true);
+        sl1.setDuty(-speed+allowedTurn, true);
         sl2.setDuty(0, true);
     } else {  // speed == 0
         sr1.setDuty(0, true);
@@ -263,6 +320,11 @@ void setup() {
     Serial.println(F("i2cSetup complete"));
     MPU6050Connect();
     Serial.println(F("MPU6050Connect complete"));  
+
+    Serial.println("BT initialization...");  
+    BT.begin(9600);
+    sleep_ms(500);
+    Serial.println("BT init complete...");  
 }
 
 void loop() {
@@ -271,24 +333,8 @@ void loop() {
     } else {
         // return; 
     }
-
-    pitchSetpoint = BALANCE_PITCH;
     
-    pitchInput = ypr[1] * 180/M_PI + feedbackOutput;
-    speedOutput = speedPid.calculate(pitchSetpoint, pitchInput);
-    feedbackOutput = feedbackPid.calculate(feedbackSetpoint, speedOutput);
-
-    if (abs(pitchInput - pitchSetpoint) > 45) {
-        /*
-        Serial.print("pitch: \t");
-        Serial.print(pitchInput);
-        Serial.print(" stopping");
-        Serial.print("\n");
-        */
-        setSpeed(0);  // Stop
-    } else {
-        setSpeed(speedOutput);
-        //Serial.println(pitchInput);
-        //Serial.print('\n');
-    }
+    processBalance();
+    readMovementFromBT();
+    processMovement();
 }
