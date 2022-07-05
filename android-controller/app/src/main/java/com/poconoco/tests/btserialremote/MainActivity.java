@@ -1,8 +1,11 @@
 package com.poconoco.tests.btserialremote;
 import androidx.appcompat.app.AppCompatActivity;
 
+import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothDevice;
+import android.graphics.PointF;
 import android.os.Bundle;
+import android.os.Looper;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
@@ -37,6 +40,9 @@ public class MainActivity extends AppCompatActivity {
         mLeftJoystick = findViewById(R.id.leftJoystick);
         mRightJoystick = findViewById(R.id.rightJoystick);
 
+        mLeftJoystickPos = new PointF(0.5f, 0.5f);
+        mRightJoystickPos = new PointF(0.5f, 0.5f);
+
         mBluetoothManager = BluetoothManager.getInstance();
         if (mBluetoothManager == null) {
             // Bluetooth unavailable on this device :( tell the user
@@ -64,33 +70,57 @@ public class MainActivity extends AppCompatActivity {
 
         resetConnectButton();
 
-        mLeftJoystick.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View view, MotionEvent motionEvent) {
-                if (motionEvent.getActionMasked() == MotionEvent.ACTION_DOWN
-                        || motionEvent.getActionMasked() == MotionEvent.ACTION_MOVE) {
-                    int[] pos = new int[2];
-                    view.getLocationOnScreen(pos);
-                    //view.getLocationInWindow(locations);
+        attachViewJoystick(mLeftJoystick, mLeftJoystickPos);
+        attachViewJoystick(mRightJoystick, mRightJoystickPos);
+    }
 
-                    float width = view.getWidth();
-                    float height = view.getHeight();
-                    float x = motionEvent.getX() - width / 2;
-                    float y = -1 * (motionEvent.getY() - height / 2);
+    @Override
+    protected void onPause() {
+        super.onPause();
 
-                    float normX = x / (width / 2);
-                    float normY = y / (height / 2);
+        disconnect(null);
+    }
 
-                    normX = clamp(normX, -1, 1);
-                    normY = clamp(normY, -1, 1);
+    private void scheduleSend() {
+        new android.os.Handler(Looper.getMainLooper()).postDelayed(
+                () -> {
+                    if (!mConnected)
+                        return;
 
-                    Log.d("coords", "X: " + normX + " Y: " + normY);
+                    int x = Math.round(mLeftJoystickPos.x * 100);
+                    int y = 100 - Math.round(mLeftJoystickPos.y * 100);
 
-                    return true;
-                }
+                    String packet = String.format("MX%03dY%03d", x, y);
+                    mStatus.setText(packet);
 
-                return false;
-            };
+                    mDeviceInterface.sendMessage(packet);
+                    scheduleSend();
+                },
+                100);
+    }
+
+    private void attachViewJoystick(ImageView view, PointF output) {
+        view.setOnTouchListener((view1, motionEvent) -> {
+            if (motionEvent.getActionMasked() == MotionEvent.ACTION_DOWN
+                    || motionEvent.getActionMasked() == MotionEvent.ACTION_MOVE) {
+                int[] pos = new int[2];
+                view1.getLocationOnScreen(pos);
+                //view.getLocationInWindow(locations);
+
+                float width = view1.getWidth();
+                float height = view1.getHeight();
+                float x = motionEvent.getX() / width;
+                float y = motionEvent.getY() / height;
+
+                output.x = clamp(x, 0, 1);
+                output.y = clamp(y, 0, 1);
+
+//                mStatus.setText(String.format("X: %.2f, Y: %.2f", output.x, output.y));
+
+                return true;
+            }
+
+            return false;
         });
     }
 
@@ -98,21 +128,13 @@ public class MainActivity extends AppCompatActivity {
         mConnect.setEnabled(true);
         if (mConnected) {
             mConnect.setText("Disconnect");
-            mConnect.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View view) {
-                    disconnect(null);
-                }
-            });
+            mConnect.setOnClickListener(view -> disconnect(null));
         } else {
             mConnect.setText("Connect");
-            mConnect.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View view) {
-                    mStatus.setText("Connecting...");
-                    mConnect.setEnabled(false);
-                    connect();
-                }
+            mConnect.setOnClickListener(view -> {
+                mStatus.setText("Connecting...");
+                mConnect.setEnabled(false);
+                connect();
             });
         }
     }
@@ -127,8 +149,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void disconnect(final String message) {
-        mBluetoothManager.closeDevice(mDeviceInterface);
+        if (mDeviceInterface != null)
+            mBluetoothManager.closeDevice(mDeviceInterface);
         mBluetoothManager.close();
+
+        mDeviceInterface = null;
 
         mConnected = false;
         resetConnectButton();
@@ -154,6 +179,8 @@ public class MainActivity extends AppCompatActivity {
 
         mConnected = true;
         resetConnectButton();
+
+        scheduleSend();
     }
 
     private void onMessageSent(String message) {}
@@ -176,9 +203,11 @@ public class MainActivity extends AppCompatActivity {
     private ImageView mLeftJoystick;
     private ImageView mRightJoystick;
 
+    private PointF mLeftJoystickPos;
+    private PointF mRightJoystickPos;
+
     private BluetoothManager mBluetoothManager;
     private SimpleBluetoothDeviceInterface mDeviceInterface;
     private boolean mConnected;
     private ArrayList<String> mPairedMACs;
-
 }
