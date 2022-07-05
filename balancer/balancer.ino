@@ -8,6 +8,7 @@
 //   - Raspberry Pi Pico
 //   - MPU6050 6axis motion sensor
 //   - L298N DC motors controller
+//   - JDY-31 bluetooth module
 //
 // Software modules:
 //   - MPU6050 by Jeff Rowberg <jeff@rowberg.net>
@@ -58,8 +59,8 @@ double turn;
 
 double feedbackMaxAngle = 2;
 
-char btMoveForward = 0;
-char btMoveTurn = 0;
+int btMoveForward = 0;
+int btMoveTurn = 0;
 
 //Specify the links and initial tuning parameters
 
@@ -82,14 +83,32 @@ void readMovementFromBT() {
     static unsigned long lastMovementCommand = 0;
     unsigned long now = millis();
   
-    // Expect packet as "MM<forward speed as byte><turn speed as byte>", for full stop.
-    if (BT.available() >= 4) {
+    // Expect joystick packet as "MX<Xcoord>Y<Ycoord>", where X and Y coords are 3 digits strings from 0 to 100. 
+    // For example, middle position is sent as: "MX050Y050"
+    if (BT.available() >= 9) {
         while (BT.available() && BT.read() != 'M');  // Skip to first 'M' header byte
-        if (BT.available() >= 3 && BT.read() == 'M') {  // Verify the second 'M' header byte
-            btMoveForward = BT.read();
-            btMoveTurn = BT.read();
+        if (BT.available() >= 8 && BT.read() == 'X') {  // Verify the second 'X' header byte
+            char rawX[4];
+            char rawY[4];
 
-            lastMovementCommand = now;
+            BT.readBytes(rawX, 3);
+            if (BT.read() == 'Y')   // Verify middle 'Y' byte
+            {
+                BT.readBytes(rawY, 3);
+
+                // Provide null terminators
+                rawX[3] = '\0';
+                rawY[3] = '\0';
+                
+                btMoveForward = atoi(rawY) - 50;
+                btMoveTurn = atoi(rawX) - 50;
+    
+                lastMovementCommand = now;
+            } else{
+                Serial.println("Didn't found middle Y, skipping...");
+            }
+        } else {
+            Serial.println("Didn't found second X, skipping...");
         }
 
         while (BT.available()) BT.read();  // Flush the rest of available data
@@ -102,9 +121,9 @@ void readMovementFromBT() {
     }
 }
 
-void processMovement() {
-    speedSetpoint = map(btMoveForward, -128, 128, -10, 10);
-    turn = map(btMoveTurn, -128, 128, -10, 10);
+void processMovement() {    
+    speedSetpoint = map(btMoveForward, -50, 50, -10, 10);
+    turn = map(btMoveTurn, -50, 50, -10, 10);
 }
 
 void processBalance() {
@@ -323,7 +342,12 @@ void setup() {
 
     Serial.println("BT initialization...");  
     BT.begin(9600);
-    sleep_ms(500);
+    sleep_ms(250);
+    BT.println("AT+BAUD8"); // Switch baudrate to 115200
+    sleep_ms(250);
+    BT.end();
+    BT.begin(115200);
+    
     Serial.println("BT init complete...");  
 }
 
