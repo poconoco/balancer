@@ -30,7 +30,7 @@ MPU6050 mpu;
 
 // Mechanical config
 #define MPU_ORIENTATION 1, 0, 1, 0  // MPU6050  sensor orientation quaternion: turn 1 around Y axis
-#define BALANCE_PITCH -2.5;    // Target angle where bot is as close as possible to balance
+#define BALANCE_PITCH -3.0;    // Target angle where bot is as close as possible to balance
 
 // Electrical config
 #define INTERRUPT_PIN 2
@@ -58,6 +58,9 @@ double speedSetpoint = 0;
 double turn;
 
 double feedbackMaxAngle = 2;
+int maxSpeedControl = 40;
+int maxTurnControl = 20;
+double idleTurnTune = -2.0;
 
 int btMoveForward = 0;
 int btMoveTurn = 0;
@@ -66,8 +69,8 @@ int btMoveTurn = 0;
 
 // PID Args: 
 // double dt, double max, double min, double Kp, double Ki, double Kd
-PID pitchPid(1, 100, -100, 9, 0.016, 11000, true);
-PID speedPid(1, feedbackMaxAngle, -feedbackMaxAngle, 0, 0.00006, 0.0, true);
+PID pitchPid(1, 100, -100, 9, 0.02, 4000, true);
+PID speedPid(1, feedbackMaxAngle, -feedbackMaxAngle, 0.0, 0.00010, 0.0, true);
 
 // Servo library won't work on PiPico, and we want to leverage hardware PWM generator
 RP2040_PWM sr1(15, L298N_PWM_FREQUENCY, 0);
@@ -122,8 +125,8 @@ void readMovementFromBT() {
 }
 
 void processMovement() {    
-    speedSetpoint = map(btMoveForward, -50, 50, -10, 10);
-    turn = map(btMoveTurn, -50, 50, -10, 10);
+    speedSetpoint = map(btMoveForward, -50, 50, -maxSpeedControl, maxSpeedControl);
+    turn = float(map(btMoveTurn, -50, 50, -maxTurnControl, maxTurnControl)) + idleTurnTune;
 }
 
 void processBalance() {
@@ -134,17 +137,9 @@ void processBalance() {
     pitchFeedback = speedPid.calculate(speedSetpoint, speedInput);
 
     if (abs(pitchInput - pitchSetpoint) > 45) {
-        /*
-        Serial.print("pitch: \t");
-        Serial.print(pitchInput);
-        Serial.print(" stopping");
-        Serial.print("\n");
-        */
         setSpeed(0);  // Stop
     } else {
         setSpeed(speedInput);
-        //Serial.println(pitchInput);
-        //Serial.print('\n');
     }
 }
 
@@ -288,7 +283,7 @@ double mapSpeedToPwm(double speed) {
 
 void setSpeed(double rawSpeed)
 {
-    led.setDuty(rawSpeed, true);
+    led.setDuty(abs(rawSpeed), true);
     
     double speed;
     const double deadBand = 35;
