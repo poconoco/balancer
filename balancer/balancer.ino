@@ -281,6 +281,17 @@ double mapSpeedToPwm(double speed) {
   return mapDouble(speed, -100, 100, 5, 10);
 }
 
+double constrainSpeedControl(double speedControl)
+{
+    if (speedControl < 0)
+        return 0;
+
+    if (speedControl > 100)
+        return 100;
+
+    return speedControl;
+}
+
 void setSpeed(double rawSpeed)
 {
     led.setDuty(abs(rawSpeed), true);
@@ -296,27 +307,39 @@ void setSpeed(double rawSpeed)
         speed = rawSpeed;
     }
 
-    int allowedTurn = abs(speed)+abs(turn) >= 100 ? 0 : turn;
-  
-    if (speed > 0) {
-        sr1.setDuty(0, true);
-        sr2.setDuty(speed+allowedTurn, true);
-        sl1.setDuty(0, true);
-        sl2.setDuty(speed-allowedTurn, true);
-    } else if (speed < 0) {
-        sr1.setDuty(-speed-allowedTurn, true);
-        sr2.setDuty(0, true);
-        sl1.setDuty(-speed+allowedTurn, true);
-        sl2.setDuty(0, true);
-    } else {  // speed == 0
+    if (speed == 0) 
+    {
         sr1.setDuty(0, true);
         sr2.setDuty(0, true);
         sl1.setDuty(0, true);
-        sl2.setDuty(0, true);
-    }
+        sl2.setDuty(0, true);    
+    } 
+    else
+    {        
+        double rSpeed = speed+turn;
+        if (rSpeed > 0)
+        {
+            sr1.setDuty(0, true);
+            sr2.setDuty(constrainSpeedControl(rSpeed), true);
+        }
+        else
+        {
+            sr1.setDuty(constrainSpeedControl(-rSpeed), true);
+            sr2.setDuty(0, true);
+        }
 
-    //servo1.setPWM(SERVO1_PIN, 50, mapSpeedToPwm(speed), true);
-    //servo2.setPWM(SERVO2_PIN, 50, mapSpeedToPwm(-1 * speed), true);
+        double lSpeed = speed-turn;
+        if (lSpeed > 0)
+        {
+            sl1.setDuty(0, true);
+            sl2.setDuty(constrainSpeedControl(lSpeed), true);
+        }
+        else
+        {
+            sl1.setDuty(constrainSpeedControl(-lSpeed), true);
+            sl2.setDuty(0, true);
+        }
+    }
 }
 
 void setup() {
