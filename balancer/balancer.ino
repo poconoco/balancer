@@ -51,19 +51,9 @@ volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin h
 
 //PID ins and outs
 double pitchSetpoint = BALANCE_PITCH;
-double pitchInput = 0;
-double speedInput;
 double pitchFeedback = 0;
-double speedSetpoint = 0;
-double turn;
 
 double feedbackMaxAngle = 2;
-int maxSpeedControl = 40;
-int maxTurnControl = 20;
-double idleTurnTune = -2.0;
-
-int btMoveForward = 0;
-int btMoveTurn = 0;
 
 //Specify the links and initial tuning parameters
 
@@ -80,61 +70,154 @@ RP2040_PWM sl2(13, L298N_PWM_FREQUENCY, 0);
 
 RP2040_PWM led(25, 1000, 0);
 
-UART BT(0, 1, NC, NC);
+class BluetoothRC {
+  public:
+    BluetoothRC(int txPin, int rxPin)
+      : _inited(false)
+      , _BT(txPin, rxPin, NC, NC) {}
 
-void readMovementFromBT() {
-    static unsigned long lastMovementCommand = 0;
-    unsigned long now = millis();
-  
-    // Expect joystick packet as "MX<Xcoord>Y<Ycoord>", where X and Y coords are 3 digits strings from 0 to 100. 
-    // For example, middle position is sent as: "MX050Y050"
-    if (BT.available() >= 9) {
-        while (BT.available() && BT.read() != 'M');  // Skip to first 'M' header byte
-        if (BT.available() >= 8 && BT.read() == 'X') {  // Verify the second 'X' header byte
-            char rawX[4];
-            char rawY[4];
+    ~BluetoothRC() {
+      if (_inited)
+        _BT.end();
+    }
 
-            BT.readBytes(rawX, 3);
-            if (BT.read() == 'Y')   // Verify middle 'Y' byte
-            {
-                BT.readBytes(rawY, 3);
+    void init() {
+      Serial.println("BT initialization...");  
+      _BT.begin(9600);
+      sleep_ms(250);
+      _BT.println("AT+BAUD8"); // Switch baudrate to 115200
+      sleep_ms(250);
+      _BT.end();
+      _BT.begin(115200);
+      _inited = true;
+      Serial.println("BT init complete...");  
+    }
 
-                // Provide null terminators
-                rawX[3] = '\0';
-                rawY[3] = '\0';
-                
-                btMoveForward = atoi(rawY) - 50;
-                btMoveTurn = atoi(rawX) - 50;
+    float getX(float mapToMin, float mapToMax) {
+      if (! _inited) {
+        Serial.println("ERROR: BluetoothRemoteControl not initialized");  
+        return 0;
+      }
+      
+      return _mapFloat(_x, -50, 50, mapToMin, mapToMax);
+    }
+
+    float getY(float mapToMin, float mapToMax) {
+      if (! _inited) {
+        Serial.println("ERROR: BluetoothRemoteControl not initialized");  
+        return 0;
+      }
+      
+      return _mapFloat(_y, -50, 50, mapToMin, mapToMax);
+    }
+
+    // Should be called periodically, to not let the buffer overflow
+    void read() {
+      if (! _inited) {
+        Serial.println("ERROR: BluetoothRemoteControl not initialized");  
+        return;
+      }
+      
+      static unsigned long lastMovementCommand = 0;
+      unsigned long now = millis();
     
-                lastMovementCommand = now;
-            } else{
-                Serial.println("Didn't found middle Y, skipping...");
-            }
-        } else {
-            Serial.println("Didn't found second X, skipping...");
-        }
-
-        while (BT.available()) BT.read();  // Flush the rest of available data
+      // Expect joystick packet as "MX<Xcoord>Y<Ycoord>", where X and Y coords are 3 digits strings from 0 to 100. 
+      // For example, middle position is sent as: "MX050Y050"
+      if (_BT.available() >= 9) {
+          while (_BT.available() && _BT.read() != 'M');  // Skip to first 'M' header byte
+          if (_BT.available() >= 8 && _BT.read() == 'X') {  // Verify the second 'X' header byte
+              char rawX[4];
+              char rawY[4];
+  
+              _BT.readBytes(rawX, 3);
+              if (_BT.read() == 'Y')   // Verify middle 'Y' byte
+              {
+                  _BT.readBytes(rawY, 3);
+  
+                  // Provide null terminators
+                  rawX[3] = '\0';
+                  rawY[3] = '\0';
+                  
+                  _y = atoi(rawY) - 50;
+                  _x = atoi(rawX) - 50;
+      
+                  lastMovementCommand = now;
+              } else{
+                  Serial.println("Didn't found middle Y, skipping...");
+              }
+          } else {
+              Serial.println("Didn't found second X, skipping...");
+          }
+  
+          while (_BT.available()) _BT.read();  // Flush the rest of available data
+      }
+  
+      // If no commands for 1/2 second, stop
+      if (now - lastMovementCommand >= 500) {
+          _y = 0;
+          _x = 0;
+      }
     }
+  
+  private:
+    bool _inited;
+    UART _BT;
+    int _y = 0;
+    int _x = 0;
 
-    // If no commands for 1/2 second, stop
-    if (now - lastMovementCommand >= 500) {
-        btMoveForward = 0;
-        btMoveTurn = 0;
+    float _mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
+      return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
     }
-}
+};
 
-void processMovement() {    
-    speedSetpoint = map(btMoveForward, -50, 50, -maxSpeedControl, maxSpeedControl);
-    turn = float(map(btMoveTurn, -50, 50, -maxTurnControl, maxTurnControl)) + idleTurnTune;
-}
+class MovementRC {
+  public:
+    MovementRC(BluetoothRC *btRC,
+               float maxAbsSpeedControl,
+               float maxAbsTurnControl,
+               float idleTurnTune) 
+      : _btRC(btRC)
+      , _maxAbsSpeedControl(maxAbsSpeedControl)
+      , _maxAbsTurnControl(maxAbsTurnControl)
+      , _idleTurnTune(idleTurnTune) {}
+
+  float getSpeed() {
+    return _speed;
+  }
+
+  float getTurn() {
+    return _turn;
+  }
+
+  // Should be called periodically, to not let the BT serial buffer overflow
+  void tick() {
+    _btRC->read();
+    _speed = _btRC->getY(-_maxAbsSpeedControl, _maxAbsSpeedControl);
+    _turn = _btRC->getX(-_maxAbsTurnControl, _maxAbsTurnControl) + _idleTurnTune;        
+  }
+
+  private:
+    BluetoothRC *_btRC;
+    double _speed;
+    double _turn;
+
+    double _maxAbsSpeedControl;
+    double _maxAbsTurnControl;
+    double _idleTurnTune;
+};
+
+BluetoothRC btRC(0, 1);
+MovementRC movementRC(&btRC,
+                      40,   // Max abs speed control
+                      20,   // Max abs turn control
+                      -2);  // Idle turn tune
 
 void processBalance() {
     pitchSetpoint = BALANCE_PITCH;
-    
-    pitchInput = ypr[1] * 180/M_PI + pitchFeedback;
-    speedInput = pitchPid.calculate(pitchSetpoint, pitchInput);
-    pitchFeedback = speedPid.calculate(speedSetpoint, speedInput);
+
+    float pitchInput = ypr[1] * 180/M_PI + pitchFeedback;
+    float speedInput = pitchPid.calculate(pitchSetpoint, pitchInput);
+    pitchFeedback = speedPid.calculate(movementRC.getSpeed(), speedInput);
 
     if (abs(pitchInput - pitchSetpoint) > 45) {
         setSpeed(0);  // Stop
@@ -307,6 +390,8 @@ void setSpeed(double rawSpeed)
         speed = rawSpeed;
     }
 
+    float turn = movementRC.getTurn();
+
     if (speed == 0) 
     {
         sr1.setDuty(0, true);
@@ -356,17 +441,9 @@ void setup() {
     i2cSetup();
     Serial.println(F("i2cSetup complete"));
     MPU6050Connect();
-    Serial.println(F("MPU6050Connect complete"));  
+    Serial.println(F("MPU6050Connect complete"));
 
-    Serial.println("BT initialization...");  
-    BT.begin(9600);
-    sleep_ms(250);
-    BT.println("AT+BAUD8"); // Switch baudrate to 115200
-    sleep_ms(250);
-    BT.end();
-    BT.begin(115200);
-    
-    Serial.println("BT init complete...");  
+    btRC.init();
 }
 
 void loop() {
@@ -377,6 +454,5 @@ void loop() {
     }
     
     processBalance();
-    readMovementFromBT();
-    processMovement();
+    movementRC.tick();
 }
