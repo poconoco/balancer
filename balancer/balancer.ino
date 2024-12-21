@@ -22,6 +22,10 @@
 //   - RP2040_PWM by Khoi Hoang
 //   - PID based on PID by Bradley J. Snyder <snyder.bradleyj@gmail.com>
 //
+// Remote control: 
+//   - Uses the Android app as a bluetooth remote, sources can be found here: 
+//   - https://github.com/poconoco/bt-remote/
+
 
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
