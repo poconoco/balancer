@@ -1,29 +1,33 @@
 
-// 2022 by Leonid Yurchenko <noct at ukr.net>
-// https://github.com/poconoco/balancer/
+// 2022 by Leonid Yurchenko
+// https://www.youtube.com/@nocomake
 //
 // Balancing bot firmware
 //
-// Hardware modules:
+// Hardware:
 //   - Raspberry Pi Pico
-//   - MPU6050 6axis motion sensor
+//   - MPU6050 6-axis motion sensor
 //   - L298N DC motors controller
 //   - JDY-31 bluetooth module
 //
-// Software modules:
+// ** Requires deprecated Arduino MBED OS boards support
+// 
+// Requires libraries installation in Arduino IDE:
+//   - Use MPU6050 lib to get hardware DMP readings from MPU6050
+//   - Use RP2040_PWM lib to leverage PiPico hardware PWM generators
+//
+// Includes third party software modules:
 //   - MPU6050 by Jeff Rowberg <jeff@rowberg.net>
 //   - I2Cdev lib by Jeff Rowberg <jeff@rowberg.net>
 //   - RP2040_PWM by Khoi Hoang
 //   - PID based on PID by Bradley J. Snyder <snyder.bradleyj@gmail.com>
 //
-// Features:
-//   - Use MPU6050 lib to get hardware DMP readings from MPU6050
-//   - Use RP2040_PWM lib to leverage PiPico hardware PWM generators
 
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "RP2040_PWM.h"
 #include "pid.h"
+#include "BtRcReceiver.h"
 #include <Wire.h>
 
 MPU6050 mpu;
@@ -70,134 +74,35 @@ RP2040_PWM sl2(13, L298N_PWM_FREQUENCY, 0);
 
 RP2040_PWM led(25, 1000, 0);
 
-class BluetoothRC {
-  public:
-    BluetoothRC(int txPin, int rxPin)
-      : _inited(false)
-      , _BT(txPin, rxPin, NC, NC) {}
-
-    ~BluetoothRC() {
-      if (_inited)
-        _BT.end();
-    }
-
-    void init() {
-      Serial.println("BT initialization...");  
-      _BT.begin(9600);
-      sleep_ms(250);
-      _BT.println("AT+BAUD8"); // Switch baudrate to 115200
-      sleep_ms(250);
-      _BT.end();
-      _BT.begin(115200);
-      _inited = true;
-      Serial.println("BT init complete...");  
-    }
-
-    float getX(float mapToMin, float mapToMax) {
-      if (! _inited) {
-        Serial.println("ERROR: BluetoothRemoteControl not initialized");  
-        return 0;
-      }
-      
-      return _mapFloat(_x, -50, 50, mapToMin, mapToMax);
-    }
-
-    float getY(float mapToMin, float mapToMax) {
-      if (! _inited) {
-        Serial.println("ERROR: BluetoothRemoteControl not initialized");  
-        return 0;
-      }
-      
-      return _mapFloat(_y, -50, 50, mapToMin, mapToMax);
-    }
-
-    // Should be called periodically, to not let the buffer overflow
-    void read() {
-      if (! _inited) {
-        Serial.println("ERROR: BluetoothRemoteControl not initialized");  
-        return;
-      }
-      
-      static unsigned long lastMovementCommand = 0;
-      unsigned long now = millis();
-    
-      // Expect joystick packet as "MX<Xcoord>Y<Ycoord>", where X and Y coords are 3 digits strings from 0 to 100. 
-      // For example, middle position is sent as: "MX050Y050"
-      if (_BT.available() >= 9) {
-          while (_BT.available() && _BT.read() != 'M');  // Skip to first 'M' header byte
-          if (_BT.available() >= 8 && _BT.read() == 'X') {  // Verify the second 'X' header byte
-              char rawX[4];
-              char rawY[4];
-  
-              _BT.readBytes(rawX, 3);
-              if (_BT.read() == 'Y')   // Verify middle 'Y' byte
-              {
-                  _BT.readBytes(rawY, 3);
-  
-                  // Provide null terminators
-                  rawX[3] = '\0';
-                  rawY[3] = '\0';
-                  
-                  _y = atoi(rawY) - 50;
-                  _x = atoi(rawX) - 50;
-      
-                  lastMovementCommand = now;
-              } else{
-                  Serial.println("Didn't found middle Y, skipping...");
-              }
-          } else {
-              Serial.println("Didn't found second X, skipping...");
-          }
-  
-          while (_BT.available()) _BT.read();  // Flush the rest of available data
-      }
-  
-      // If no commands for 1/2 second, stop
-      if (now - lastMovementCommand >= 500) {
-          _y = 0;
-          _x = 0;
-      }
-    }
-  
-  private:
-    bool _inited;
-    UART _BT;
-    int _y = 0;
-    int _x = 0;
-
-    float _mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
-      return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
-    }
-};
-
 class MovementRC {
   public:
-    MovementRC(BluetoothRC *btRC,
+    MovementRC(BtRcReceiver<UART> *btRC,
                float maxAbsSpeedControl,
                float maxAbsTurnControl,
                float idleTurnTune) 
       : _btRC(btRC)
       , _maxAbsSpeedControl(maxAbsSpeedControl)
       , _maxAbsTurnControl(maxAbsTurnControl)
-      , _idleTurnTune(idleTurnTune) {}
+      , _idleTurnTune(idleTurnTune) {
+    }
 
-  float getSpeed() {
-    return _speed;
-  }
+    float getSpeed() {
+      return _speed;
+    }
 
-  float getTurn() {
-    return _turn;
-  }
+    float getTurn() {
+      return _turn;
+    }
 
-  // Should be called periodically, to not let the BT serial buffer overflow
-  void tick() {
-    _btRC->read();
-    _speed = _btRC->getY(-_maxAbsSpeedControl, _maxAbsSpeedControl);
-    _turn = _btRC->getX(-_maxAbsTurnControl, _maxAbsTurnControl) + _idleTurnTune;        
-  }
+    // Should be called periodically, to not let the BT serial buffer overflow
+    void tick() {
+      _btRC->read();
+      _speed = map(_btRC->getY1(), -128, 127, -_maxAbsSpeedControl, _maxAbsSpeedControl);
+      _turn = map(_btRC->getX1(), -128, 127, -_maxAbsTurnControl, _maxAbsTurnControl) + _idleTurnTune;
+    }
 
   private:
-    BluetoothRC *_btRC;
+    BtRcReceiver<UART> *_btRC;
     double _speed;
     double _turn;
 
@@ -206,7 +111,8 @@ class MovementRC {
     double _idleTurnTune;
 };
 
-BluetoothRC btRC(0, 1);
+UART btUart(0, 1, NC, NC);
+BtRcReceiver<UART> btRC(&btUart);
 MovementRC movementRC(&btRC,
                       40,   // Max abs speed control
                       20,   // Max abs turn control
@@ -443,7 +349,7 @@ void setup() {
     MPU6050Connect();
     Serial.println(F("MPU6050Connect complete"));
 
-    btRC.init();
+    btRC.init("Noco BALANCER", "1234");
 }
 
 void loop() {
