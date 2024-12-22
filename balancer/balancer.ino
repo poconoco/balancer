@@ -8,7 +8,8 @@
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "RP2040_PWM.h"
 #include "pid.h"
-#include "BtRcReceiver.h"
+#include "bt-remote/receivers/cpp/BtRcReceiver.h"
+
 #include <Wire.h>
 
 MPU6050 mpu;
