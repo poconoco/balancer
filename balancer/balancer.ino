@@ -94,7 +94,7 @@ class MovementRC {
 };
 
 UART btUart(0, 1, NC, NC);
-BtRcReceiver<UART> btRC(&btUart);
+BtRcReceiver<UART> btRC(&btUart, "Noco BALANCER", "1234");
 MovementRC movementRC(&btRC,
                       40,   // Max abs speed control
                       20,   // Max abs turn control
@@ -331,7 +331,7 @@ void setup() {
     MPU6050Connect();
     Serial.println(F("MPU6050Connect complete"));
 
-    btRC.init("Noco BALANCER", "1234");
+    btRC.init();
 }
 
 void loop() {
