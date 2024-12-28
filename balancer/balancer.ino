@@ -78,7 +78,7 @@ class MovementRC {
 
     // Should be called periodically, to not let the BT serial buffer overflow
     void tick() {
-      _btRC->read();
+      _btRC->tick();
       _speed = map(_btRC->getY1(), -128, 127, -_maxAbsSpeedControl, _maxAbsSpeedControl);
       _turn = map(_btRC->getX1(), -128, 127, -_maxAbsTurnControl, _maxAbsTurnControl) + _idleTurnTune;
     }
